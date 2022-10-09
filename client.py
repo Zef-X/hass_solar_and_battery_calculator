@@ -36,5 +36,47 @@ class client:
         real_data = real_data.ffill()
         real_data = real_data.astype(float)
         real_data = real_data.resample("15S").mean()
+        real_data = real_data.round(2)
+
+        # rename the columns "Grid2Home", "Home2Grid" and "SolarProduction"
+        real_data = real_data.rename(columns={"sensor.g2h_v6_power": "Grid2Home", "sensor.h2g_v6_power": "Home2Grid", "sensor.shelly1pm_244cab441f01_power": "SolarProduction"})
+
+        real_data = self.get_consumption(real_data)
 
         return real_data
+
+    def get_consumption(self, data):
+        # calculate the consumption
+        data["HomeConsumption"] = data["Grid2Home"] + data["SolarProduction"] - data["Home2Grid"]
+
+        return data
+
+    def simulate_data(self, data,current_pv_size, sim_pv_size):
+        # normalize the data
+        data["SolarProduction " + str(sim_pv_size) + "kWp"] = (data["SolarProduction"]/current_pv_size) * sim_pv_size
+        data["Additional_Solar_Production " + str(sim_pv_size) + "kWp"] = data["SolarProduction " + str(sim_pv_size) + "kWp"] - data["SolarProduction"]
+
+        if data["Grid2Home"].sum() > 0:
+            if data["Additional_Solar_Production " + str(sim_pv_size) + "kWp"].sum() > data["Grid2Home"].sum():
+                additional_export = data["Additional_Solar_Production " + str(sim_pv_size) + "kWp"] - data["Grid2Home"]
+                reduced_import = data["Additional_Solar_Production " + str(sim_pv_size) + "kWp"] - additional_export
+
+                data["Grid2Home " + str(sim_pv_size) + "kWp"] = data["Grid2Home"] - reduced_import
+                data["Home2Grid " + str(sim_pv_size) + "kWp"] = data["Home2Grid"] + additional_export
+            else:
+                data["Grid2Home " + str(sim_pv_size) + "kWp"] = data["Grid2Home"] - data["Additional_Solar_Production " + str(sim_pv_size) + "kWp"]
+                data["Home2Grid " + str(sim_pv_size) + "kWp"] = data["Home2Grid"]
+        else:
+            data["Grid2Home " + str(sim_pv_size) + "kWp"] = data["Grid2Home"]
+            data["Home2Grid " + str(sim_pv_size) + "kWp"] = data["Home2Grid"] + data["Additional_Solar_Production " + str(sim_pv_size) + "kWp"]
+
+        data["HomeConsumption " + str(sim_pv_size) + "kWp"] = data["Grid2Home " + str(sim_pv_size) + "kWp"] + data["SolarProduction " + str(sim_pv_size) + "kWp"] - data["Home2Grid " + str(sim_pv_size) + "kWp"]
+
+        return data
+
+    def calculate_solar_selfconsumption(self, data, pv_size):
+        # calculate the solar selfconsumption
+        summe_solar = data["SolarProduction " + str(pv_size) + "kWp"].sum()
+        summe_export = data["Home2Grid " + str(pv_size) + "kWp"].sum()
+        solar_selfconsumption = (summe_solar - summe_export) / (summe_solar)
+        return solar_selfconsumption

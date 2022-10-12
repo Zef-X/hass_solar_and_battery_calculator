@@ -1,50 +1,102 @@
 import pandas as pd
 import requests
+import datetime
+import os
 
 class client:
-    def __init__(self, url, token, first_date):
+    def __init__(self, url, token, current_pv_size):
         self.url = url
         self.token = token
-        self.first_date = first_date
+        self.SAMPLING_RATE = "5S"
+        self.current_pv_size = current_pv_size
+
         self.headers = {
             "Authorization": "Bearer " + self.token,
             "content-type": "application/json",
         }
 
-        self.SAMPLING_RATE = "5S"
+    def cache_data(self,
+                    sensors,
+                    first_date_str = datetime.date.today().isoformat(),
+                    last_date_str = datetime.date.today().isoformat()):
 
-    def get_data(self, sensors):
-        real_data = pd.DataFrame(columns=sensors)
+        print("Downloading data from " + first_date_str + " to " + last_date_str)
+
+        first_date_str = first_date_str + "T00:00:00.000000+00:00"
+        last_date_str = last_date_str + "T00:00:00.000000+00:00"
+
+        # convert first_date_str and last_date_str to datetime objects in format %Y-%m-%dT%H:%M:%S.%fZ
+        first_date = datetime.datetime.strptime(first_date_str, "%Y-%m-%dT%H:%M:%S.%f+00:00")
+        last_date = datetime.datetime.strptime(last_date_str, "%Y-%m-%dT%H:%M:%S.%f+00:00")
+
+
+        for date in range((last_date - first_date).days + 1):
+            date = (first_date + datetime.timedelta(days=date)).isoformat()
+
+            df = self.fetch_data(sensors, date)
+            df = self.correct_data(sensors, df)
+
+            self.save_data(df, self.current_pv_size)
+
+    def fetch_data(self, sensors, date):
+        df = pd.DataFrame(columns=sensors)
         for sensor in sensors:
-            url = "http://homeassistant.local:8123/api/history/period/" + self.first_date + "?filter_entity_id=" + sensor
+            url = self.url + "api/history/period/" + date + "?filter_entity_id=" + sensor
             response = requests.get(url, headers=self.headers, verify=False)
             data = response.json()
 
-            # parse the data into a pandas dataframe, state in column of sensor name
             for item in data:
-                real_data = real_data.append(item, ignore_index=True)
+                df = df.append(item, ignore_index=True)
 
-        # sort state into column of sensor name
-        real_data = real_data.pivot(index="last_changed", columns="entity_id", values="state")
+        # save df
+        df.to_csv("df.csv", sep=";")
+        df = df.pivot(index="last_changed", columns="entity_id", values="state")
+        df.index = pd.to_datetime(df.index)
+        df = df.sort_index()
 
-        # index the dataframe by date
-        real_data.index = pd.to_datetime(real_data.index)
-        real_data = real_data.sort_index()
+        df = df[df != "unknown"]
+        df = df[df != "unavailable"]
+        df = df.astype(float)
 
-        # cleanup file and remove all rows with value "unknown"
-        real_data = real_data[real_data != "unknown"]
-        real_data = real_data[real_data != "unavailable"]
-        real_data = real_data.astype(float)
+        return df
 
+    def correct_data(self, sensors, data):
+        print("Correcting data")
         # correct data for original 5 second interval and interpolate missing values
-        real_data = real_data.resample(self.SAMPLING_RATE).nearest(limit=1).interpolate(method="linear")
+        df = data.resample(self.SAMPLING_RATE).nearest(limit=1).interpolate(method="linear")
 
-        # rename the columns "Grid2Home", "Home2Grid" and "SolarProduction"
-        real_data = real_data.rename(columns={"sensor.g2h_v6_power": "Grid2Home", "sensor.h2g_v6_power": "Home2Grid", "sensor.shelly1pm_244cab441f01_power": "SolarProduction"})
+        # rename first sensor to "Grid2Home", "Home2Grid" and "SolarProduction"
+        df = df.rename(columns={sensors[0]: "Grid2Home", sensors[1]: "Home2Grid", sensors[2]: "SolarProduction"})
 
-        real_data = self.get_consumption(real_data)
+        return df
 
-        return real_data
+    def save_data(self, data, pv_size, battery_size=0.0, folder="cache"):
+        # create a folder for the data in current directory
+        if not os.path.exists(folder):
+            os.makedirs(folder)
+
+        # convert pv_size to string and replace . with _
+        pv_size = str(pv_size).replace(".", "_")
+        battery_size = str(battery_size).replace(".", "_")
+
+        # save the data to a csv file
+        # "2022-10-11 1_5kWp 0_0kWh.csv"
+        #filename = folder + "/" + data.index[0].strftime("%Y-%m-%d") + " " + pv_size + "kWp " + battery_size + "kWh.csv"
+        filename = folder + "/" + data.index[0].strftime("%Y-%m-%d") + " Baseline kWp.csv"
+        data.to_csv(filename, sep=";")
+        print("Saved data to " + filename)
+
+
+
+
+
+
+
+
+
+
+
+
 
     def get_consumption(self, data):
         # calculate the consumption

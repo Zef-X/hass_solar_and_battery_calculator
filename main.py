@@ -64,34 +64,6 @@ def calculate_solar_production(max_pv_size = 10.0, current_pv_size = 1.0, batter
                 filename = date_str + " " + str(new_pv_size).zfill(2) + "kWp " + str(battery_size).zfill(2) + "kWh.csv"
                 save_to_cache(os.path.join("cache", filename), df)
 
-'''
-def calculate_battery(max_pv_size = 10.0, current_pv_size = 1.0, max_battery_size = 10, time=5.0):
-    for file in os.listdir("cache"):
-        # check if filename contains "Baseline" or "0kWh"
-        if file.endswith("Baseline kWp.csv") or file.endswith("0kWh.csv"):
-            date = file.split(" ")[0]
-            pv_size = file.split(" ")[1]
-
-            df = load_from_cache(os.path.join("cache", file))
-
-            for battery_capacity in range(1, math.ceil(max_battery_size)):
-                battery_capacity = ((60/time)*60)*1000*battery_size # converting kWh to "Watt per 5 Seconds" because this is the time resolution of the data
-                df["Battery SoC"] = 0 # this is the battery state of charge in "Watt per 5 Seconds" instead of kWh
-
-                for index, row in df.iterrows():
-                    if index == 0:
-                        df.at[index, "Battery SoC"] = 0
-                    else:
-                        df.at[index, "Battery SoC"] = df.at[index-1, "Battery SoC"] + df.at[index-1, "Home2Grid"] - df.at[index-1, "Grid2Home"]
-                        if df.at[index, "Battery SoC"] > battery_capacity:
-                            df.at[index, "Battery SoC"] = battery_capacity
-                        elif df.at[index, "Battery SoC"] < 0:
-                            df.at[index, "Battery SoC"] = 0
-
-        else:
-            print("Looks like a file, already calculated, skipping...")
-'''
-
 def concentrate_data(max_pv_size = 10.0, current_pv_size = 1.0, for_size=None):
     # load all files in cache in correct order and make one large df
 
@@ -136,11 +108,6 @@ def concentrate_data(max_pv_size = 10.0, current_pv_size = 1.0, for_size=None):
         return df
 
 
-
-
-
-
-
 def calculate_selfconsumption(max_pv_size = 10.0, current_pv_size = 1.0, battery_size = 0):
     # for every file in cahce without "Baseline" in name
     for file in os.listdir("cache"):
@@ -162,25 +129,70 @@ def calculate_selfconsumption(max_pv_size = 10.0, current_pv_size = 1.0, battery
     print("Done calculating selfconsumption")
 
 
+def calculate_battery(max_pv_size = 10.0, current_pv_size = 1.0, max_battery_size = 10, time=5.0):
+    for file in os.listdir("cache"):
+        # check if filename contains "Baseline" or "0kWh"
+        if not file.endswith("Baseline kWp.csv") or file.endswith("01kWh.csv"):
+            date_first = file.split(" ")[0]
+            date_last = file.split(" ")[2]
+            pv_size = (file.split(" ")[3])[0:2]
+
+            print("Loading file: " + file)
+            df = load_from_cache(os.path.join("cache", file))
+
+            # if column "Selfconsumption" does exist, rename to "Selfconsumption Solar"
+            if "Selfconsumption" in df.columns:
+                df = df.rename(columns={"Selfconsumption": "Selfconsumption Solar"})
+
+            for battery_capacity in range(1, math.ceil(max_battery_size)):
+                print("Calculating battery capacity: " + str(battery_capacity) + "kWh")
+                battery_capacity = (((60/time)*60)*1000)*battery_capacity # converting kWh to "Watt per 5 Seconds" because this is the time resolution of the data
+                df["Battery SoC"] = 0 # this is the battery state of charge in "Watt per 5 Seconds" instead of kWh
+
+                for index, row in df.iterrows():
+                    if index == 0:
+                        df.at[index, "Battery SoC"] = 0
+                    else:
+                        df.at[index, "Battery SoC"] = df.at[index-1, "Battery SoC"] + df.at[index-1, "Home2Grid"] - df.at[index-1, "Grid2Home"]
+                        #df.at[index, "Battery SoC"] = df.at[index - 1, "Battery SoC"] - df.at[index - 1, "NetFlow"]
+                        if df.at[index, "Battery SoC"] > battery_capacity:
+                            df.at[index, "Battery SoC"] = battery_capacity
+                        elif df.at[index, "Battery SoC"] < 0:
+                            df.at[index, "Battery SoC"] = 0
+
+                # convert "Watt per 5 Seconds" to kWh rounded to 2 decimals
+                df["Battery SoC"] = df["Battery SoC"] / ((60/time)*60 * 1000)
+                df["Battery SoC"] = df["Battery SoC"].round(2)
+                battery_capacity = battery_capacity / ((60/time)*60 * 1000)
+
+                # save the file with the correct name to cache
+                # filename should be "Date - Date 05kWp 05kWh.csv"
+                folder = "cache"
+                filename = date_first + " - " + date_last + " " + pv_size + "kWp " + str(int(battery_capacity)).zfill(2) + "kWh.csv"
+                save_to_cache(os.path.join("cache", filename), df)
+
+        else:
+            print("Looks like a baseline file, skipping: " + file)
+
+
+
 if __name__ == '__main__':
     # conect zu HomeAssistant
     hass = client.client(URL, TOKEN, CURRENT_PV_SIZE)
 
     # get the data from the API and save it to a csv file in the cache folder
-    df = hass.cache_data(SENSOR_NAMES, FIRST_DATE)
+    #df = hass.cache_data(SENSOR_NAMES, FIRST_DATE)
 
     # calculate the solar production for each day
-    calculate_solar_production(MAX_PV_CAPACITY, CURRENT_PV_SIZE)
+    #calculate_solar_production(MAX_PV_CAPACITY, CURRENT_PV_SIZE)
 
     # concentrate the data for each pv_size to a single file per theoretical pv_size
-    concentrate_data(MAX_PV_CAPACITY, CURRENT_PV_SIZE)
+    #concentrate_data(MAX_PV_CAPACITY, CURRENT_PV_SIZE)
 
     # calculate the self-consumption before battery
-    calculate_selfconsumption(MAX_PV_CAPACITY, CURRENT_PV_SIZE)
+    #calculate_selfconsumption(MAX_PV_CAPACITY, CURRENT_PV_SIZE)
 
-    '''
     calculate_battery(MAX_PV_CAPACITY, CURRENT_PV_SIZE, MAX_BATTERY_SIZE)
-    '''
 
 
 

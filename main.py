@@ -24,6 +24,15 @@ CURRENT_PV_SIZE = 1.5
 MAX_PV_CAPACITY = 15.0
 MAX_BATTERY_SIZE = 15.0
 
+def wipe_cache():
+    # check if there is a cache folder
+    if os.path.isdir("cache"):
+        for file in os.listdir("cache"):
+            if file.endswith(".csv"):
+                os.remove(os.path.join("cache", file))
+                print("Deleted: " + file)
+    else:
+        print("No cache found")
 
 def load_from_cache(filename):
     try:
@@ -35,6 +44,7 @@ def load_from_cache(filename):
 
 def save_to_cache(filename, data):
     print("Saving data to cache: " + filename)
+    # round everything to 2 decimal places
     data.to_csv(filename, sep=';', index=False)
 
 def calculate_solar_production(max_pv_size = 10.0, current_pv_size = 1.0, battery_size = 0, recalculate = False):
@@ -102,6 +112,11 @@ def concentrate_data(max_pv_size = 10.0, current_pv_size = 1.0, for_size=None):
         print("")
 
     print("Done concentrating data")
+    print("Deleting Baseline files")
+    for file in os.listdir("cache"):
+        if file.endswith("Baseline kWp.csv"):
+            os.remove(os.path.join("cache", file))
+            print("Deleted: " + file)
 
 
     if for_size is not None:
@@ -115,7 +130,6 @@ def calculate_selfconsumption(max_pv_size = 10.0, current_pv_size = 1.0, battery
         if file.endswith("Baseline kWp.csv"):
             print("Skipping file: " + file)
         else:
-            print("Loading file: " + file)
             df = load_from_cache(os.path.join("cache", file))
 
             # calculate selfconsumption
@@ -144,10 +158,14 @@ def calculate_battery(max_pv_size = 10.0, current_pv_size = 1.0, max_battery_siz
             if "Selfconsumption" in df.columns:
                 df = df.rename(columns={"Selfconsumption": "Selfconsumption Solar"})
 
+            df_fresh = df
+
             for battery_capacity in range(1, math.ceil(max_battery_size)):
+                df = df_fresh.copy()
                 print("Calculating battery capacity: " + str(battery_capacity) + "kWh")
                 battery_capacity = (((60/time)*60)*1000)*battery_capacity # converting kWh to "Watt per 5 Seconds" because this is the time resolution of the data
                 df["Battery SoC"] = 0 # this is the battery state of charge in "Watt per 5 Seconds" instead of kWh
+                df["Battery Flow"] = 0 # this is the battery flow in Watt
 
                 for index, row in df.iterrows():
                     if index == 0:
@@ -157,12 +175,30 @@ def calculate_battery(max_pv_size = 10.0, current_pv_size = 1.0, max_battery_siz
                         #df.at[index, "Battery SoC"] = df.at[index - 1, "Battery SoC"] - df.at[index - 1, "NetFlow"]
                         if df.at[index, "Battery SoC"] > battery_capacity:
                             df.at[index, "Battery SoC"] = battery_capacity
+                            df.at[index, "Battery Flow"] = 0
                         elif df.at[index, "Battery SoC"] < 0:
                             df.at[index, "Battery SoC"] = 0
+                            df.at[index, "Battery Flow"] = 0
+                        else:
+                            # Battery Flow is inverted NetFlow
+                            df.at[index, "Battery Flow"] = -df.at[index, "NetFlow"]
+                            df.at[index, "NetFlow"] = 0
+
+                # recalculate Grid2Home and Home2Grid
+                # if "NetFlow" is positive, it is Grid2Home
+                # if "NetFlow" is negative, it is Home2Grid
+                df["Grid2Home"] = 0
+                df["Home2Grid"] = 0
+                for index, row in df.iterrows():
+                    if df.at[index, "NetFlow"] > 0:
+                        df.at[index, "Grid2Home"] = df.at[index, "NetFlow"]
+                    else:
+                        df.at[index, "Home2Grid"] = -df.at[index, "NetFlow"]
+
 
                 # convert "Watt per 5 Seconds" to kWh rounded to 2 decimals
                 df["Battery SoC"] = df["Battery SoC"] / ((60/time)*60 * 1000)
-                df["Battery SoC"] = df["Battery SoC"].round(2)
+                df["Battery SoC"] = df["Battery SoC"].round(4)
                 battery_capacity = battery_capacity / ((60/time)*60 * 1000)
 
                 # save the file with the correct name to cache
@@ -174,25 +210,97 @@ def calculate_battery(max_pv_size = 10.0, current_pv_size = 1.0, max_battery_siz
         else:
             print("Looks like a baseline file, skipping: " + file)
 
+def calculate_autonomy():
+    # for every file in cahce without "Baseline" in name
+    for file in os.listdir("cache"):
+        # check if filename contains "Baseline" or "0kWh"
+        if file.endswith("Baseline kWp.csv"):
+            print("Skipping file: " + file)
+        else:
+            df = load_from_cache(os.path.join("cache", file))
+            # filename looks like "2022-10-09 - 2022-10-13 02kWp 01kWh.csv"
+            pv_size_and_battery_size = file.split(" ")[3].split(".")[0]
+            pv_size = pv_size_and_battery_size.split("kWp")[0]
+            battery_size = pv_size_and_battery_size.split("kWp")[1].split("kWh")[0]
 
+            # calculate selfconsumption
+            df["Autonomy"] = (df["SolarProduction"].sum() - df["Home2Grid"].sum()) / df["Powerconsumption"].sum()
+            print("Autonomy at pv_size " + pv_size + " and battery_size " + battery_size + ": " + str(df["Autonomy"].mean()))
+
+            # save to cache
+            save_to_cache(os.path.join("cache", file), df)
+            print("")
+
+    print("Done calculating selfconsumption")
+
+def create_matrix_autonomy(max_pv_size = 10.0, current_pv_size = 1.0, battery_size = 10.0):
+    # add to every filename ending "kWp" a " 00kWh"
+    for file in os.listdir("cache"):
+        if file.endswith("kWp.csv"):
+            new_filename = file.split("kWp")[0] + "kWp 00kWh.csv"
+            os.rename(os.path.join("cache", file), os.path.join("cache", new_filename))
+
+    # create a df with x-axis: pv_size, y-axis: battery_size and fill it with the mean of the autonomy
+    df = pd.DataFrame(index=range(math.ceil(current_pv_size), int(max_pv_size)), columns=range(0, int(battery_size)))
+    for file in os.listdir("cache"):
+        # check if filename contains "Baseline" or "0kWh"
+        if not file.endswith("Baseline kWp 00kWh.csv") or not file.endswith("Matrix Autonomy.csv"):
+            df_file = load_from_cache(os.path.join("cache", file))
+
+            # filename looks like "2022-10-09 - 2022-10-13 02kWp 01kWh.csv"
+            pv_size = int(file.split(" ")[3].split("kWp")[0])
+            battery_size = int(file.split("kWp")[1].split("kWh")[0])
+
+            #print("pv_size: " + str(pv_size) + ", battery_size: " + str(battery_size) + ", autonomy: " + str(df_file["Autonomy"].mean()))
+            df.at[pv_size, battery_size] = df_file["Autonomy"].mean()
+        else:
+            print("Looks like a baseline file, skipping: " + file)
+
+    # save to cache
+    save_to_cache(os.path.join("cache", "Matrix Autonomy.csv"), df)
+
+    # print the pv_size and battery_size with the highest autonomy
+    print("pv_size: " + str(df.idxmax(axis=0).idxmax()) + ", battery_size: " + str(df.idxmax(axis=0).max()) + ", autonomy: " + str(df.max(axis=0).max()))
+
+def convert_to_excel():
+    # convert the "Matrix Autonomy.csv" to an readable .csv
+    df = load_from_cache(os.path.join("cache", "Matrix Autonomy.csv"))
+    df = df.round(2)
+    df.to_csv(os.path.join("cache", "Matrix Autonomy.csv"), sep=";", decimal=",")
 
 if __name__ == '__main__':
+    # wipe cache
+    wipe_cache()
+
     # conect zu HomeAssistant
     hass = client.client(URL, TOKEN, CURRENT_PV_SIZE)
 
     # get the data from the API and save it to a csv file in the cache folder
-    #df = hass.cache_data(SENSOR_NAMES, FIRST_DATE)
+    df = hass.cache_data(SENSOR_NAMES, FIRST_DATE)
 
     # calculate the solar production for each day
-    #calculate_solar_production(MAX_PV_CAPACITY, CURRENT_PV_SIZE)
+    calculate_solar_production(MAX_PV_CAPACITY, CURRENT_PV_SIZE)
 
     # concentrate the data for each pv_size to a single file per theoretical pv_size
-    #concentrate_data(MAX_PV_CAPACITY, CURRENT_PV_SIZE)
+    concentrate_data(MAX_PV_CAPACITY, CURRENT_PV_SIZE)
 
     # calculate the self-consumption before battery
-    #calculate_selfconsumption(MAX_PV_CAPACITY, CURRENT_PV_SIZE)
+    calculate_selfconsumption(MAX_PV_CAPACITY, CURRENT_PV_SIZE)
 
+    # calculate the Battery Flow, Battery SoC and new NetFlow
     calculate_battery(MAX_PV_CAPACITY, CURRENT_PV_SIZE, MAX_BATTERY_SIZE)
+
+    # recalculate the self-consumption after battery
+    calculate_selfconsumption(MAX_PV_CAPACITY, CURRENT_PV_SIZE)
+
+    # calculate autonomy
+    calculate_autonomy()
+
+    # show the matrix of autonomy
+    create_matrix_autonomy(MAX_PV_CAPACITY, CURRENT_PV_SIZE, MAX_BATTERY_SIZE)
+
+    # convert the "Matrix Autonomy.csv" to an readable .csv
+    convert_to_excel()
 
 
 

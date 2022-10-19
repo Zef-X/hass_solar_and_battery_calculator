@@ -4,43 +4,26 @@ import datetime
 import os
 
 class client:
-    def __init__(self, url, token, current_pv_size):
+    def __init__(self, url, token, sensors, current_pv_size):
         self.url = url
         self.token = token
         self.SAMPLING_RATE = "5S"
         self.current_pv_size = current_pv_size
+        self.sensors = sensors
 
         self.headers = {
             "Authorization": "Bearer " + self.token,
             "content-type": "application/json",
         }
 
-    def cache_data(self,
-                    sensors,
-                    first_date_str = datetime.date.today().isoformat(),
-                    last_date_str = datetime.date.today().isoformat()):
+    def get_data(self, date):
+        print("Getting data for " + date)
+        # get the data from Home Assistant for a single day, so this can be multithreaded
+        # 1. convert date_str to datetime object
 
-        print("Downloading data from " + first_date_str + " to " + last_date_str)
-
-        first_date_str = first_date_str + "T00:00:00.000000+00:00"
-        last_date_str = last_date_str + "T00:00:00.000000+00:00"
-
-        # convert first_date_str and last_date_str to datetime objects in format %Y-%m-%dT%H:%M:%S.%fZ
-        first_date = datetime.datetime.strptime(first_date_str, "%Y-%m-%dT%H:%M:%S.%f+00:00")
-        last_date = datetime.datetime.strptime(last_date_str, "%Y-%m-%dT%H:%M:%S.%f+00:00")
-
-
-        for date in range((last_date - first_date).days + 1):
-            date = (first_date + datetime.timedelta(days=date)).isoformat()
-
-            df = self.fetch_data(sensors, date)
-            df = self.correct_data(sensors, df)
-
-            self.save_data(df, self.current_pv_size)
-
-    def fetch_data(self, sensors, date):
-        df = pd.DataFrame(columns=sensors)
-        for sensor in sensors:
+        # 2. actually fetch the data from Home Assistant
+        df = pd.DataFrame(columns=self.sensors)
+        for sensor in self.sensors:
             url = self.url + "api/history/period/" + date + "?filter_entity_id=" + sensor
             response = requests.get(url, headers=self.headers, verify=False)
             data = response.json()
@@ -48,25 +31,35 @@ class client:
             for item in data:
                 df = df.append(item, ignore_index=True)
 
-        # save df
-        df.to_csv("df.csv", sep=";")
+        # 3. make a somewhat nice dataframe
+        print("Cleaning up data from " + date)
         df = df.pivot(index="last_changed", columns="entity_id", values="state")
         df.index = pd.to_datetime(df.index)
         df = df.sort_index()
 
+        df.index.name = "Time"
+        df.columns.name = date + " " + str(self.current_pv_size).zfill(2) + "kWp" + " " + str(0.0).zfill(2) + "kWh"
+
         df = df[df != "unknown"]
         df = df[df != "unavailable"]
         df = df.astype(float)
+        df = df.dropna()
 
-        return df
+        # rename the columns: Grid2Home, Home2Grid, SolarProduction
+        df = df.rename(columns={self.sensors[0]: "Grid2Home"})
+        df = df.rename(columns={self.sensors[1]: "Home2Grid"})
+        df = df.rename(columns={self.sensors[2]: "SolarProduction"})
+        #df = df.rename(columns={"last_changed": "Timestamp"})
 
-    def correct_data(self, sensors, data):
-        print("Correcting data")
-        # correct data for original 5 second interval and interpolate missing values
-        df = data.resample(self.SAMPLING_RATE).nearest(limit=1).interpolate(method="linear")
+        # remove unnecessary columns
+        # everything except Grid2Home, Home2Grid, SolarProduction
+        #df = df.drop(columns=[col for col in df.columns if col not in ["Grid2Home", "Home2Grid", "SolarProduction"]])
 
-        # rename first sensor to "Grid2Home", "Home2Grid" and "SolarProduction"
-        df = df.rename(columns={sensors[0]: "Grid2Home", sensors[1]: "Home2Grid", sensors[2]: "SolarProduction"})
+        # 4. resample the data to 5 seconds
+        #print("Resampling data from " + date)
+        #df = df.resample(self.SAMPLING_RATE).nearest(limit=1).interpolate(method="linear")
+
+        print(df)
 
         return df
 
@@ -86,47 +79,6 @@ class client:
         data.to_csv(filename, sep=";")
         print("Saved data to " + filename)
 
-
-
-
-
-
-
-
-
-
-
-
-
-    def get_consumption(self, data):
-        # calculate the consumption
-        data["HomeConsumption"] = data["Grid2Home"] + data["SolarProduction"] - data["Home2Grid"]
-
-        return data
-
-    def simulate_data_solar_only_old(self, data, current_pv_size, sim_pv_size):
-        # normalize the data
-        data["SolarProduction " + str(sim_pv_size) + "kWp"] = (data["SolarProduction"]/current_pv_size) * sim_pv_size
-        data["SolarProduction " + str(sim_pv_size) + "kWp"] = (data["SolarProduction"] / current_pv_size) * 1.5
-        data["Additional_Solar_Production " + str(sim_pv_size) + "kWp"] = data["SolarProduction " + str(sim_pv_size) + "kWp"] - data["SolarProduction"]
-
-        if data["Grid2Home"].sum() > 0:
-            if data["Additional_Solar_Production " + str(sim_pv_size) + "kWp"].sum() > data["Grid2Home"].sum():
-                additional_export = data["Additional_Solar_Production " + str(sim_pv_size) + "kWp"] - data["Grid2Home"]
-                reduced_import = data["Additional_Solar_Production " + str(sim_pv_size) + "kWp"] - additional_export
-
-                data["Grid2Home " + str(sim_pv_size) + "kWp"] = data["Grid2Home"] - reduced_import
-                data["Home2Grid " + str(sim_pv_size) + "kWp"] = data["Home2Grid"] + additional_export
-            else:
-                data["Grid2Home " + str(sim_pv_size) + "kWp"] = data["Grid2Home"] - data["Additional_Solar_Production " + str(sim_pv_size) + "kWp"]
-                data["Home2Grid " + str(sim_pv_size) + "kWp"] = data["Home2Grid"]
-        else:
-            data["Grid2Home " + str(sim_pv_size) + "kWp"] = data["Grid2Home"]
-            data["Home2Grid " + str(sim_pv_size) + "kWp"] = data["Home2Grid"] + data["Additional_Solar_Production " + str(sim_pv_size) + "kWp"]
-
-        data["HomeConsumption " + str(sim_pv_size) + "kWp"] = data["Grid2Home " + str(sim_pv_size) + "kWp"] + data["SolarProduction " + str(sim_pv_size) + "kWp"] - data["Home2Grid " + str(sim_pv_size) + "kWp"]
-
-        return data
 
     def simulate_data_solar_only(self, data, current_pv_size, sim_pv_size):
         # adjust production to pv_size

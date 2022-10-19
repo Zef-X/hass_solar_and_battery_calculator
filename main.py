@@ -234,6 +234,10 @@ def calculate_autonomy():
     print("Done calculating selfconsumption")
 
 def create_matrix_autonomy(max_pv_size = 10.0, current_pv_size = 1.0, battery_size = 10.0):
+    if os.path.exists(os.path.join("cache", "Matrix Autonomy.csv")):
+        print("File already exists, deleting")
+        os.remove(os.path.join("cache", "Matrix Autonomy.csv"))
+
     # add to every filename ending "kWp" a " 00kWh"
     for file in os.listdir("cache"):
         if file.endswith("kWp.csv"):

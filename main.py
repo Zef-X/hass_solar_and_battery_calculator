@@ -15,6 +15,7 @@ URL = "http://homeassistant.local:8123/"
 
 # Retrieve data since...
 FIRST_DATE = "2022-10-09"
+FIRST_DATE = "2022-10-10"
 
 # Sensors to retrieve - Grid2Home, Home2Grid, Solarproduction (Watt)
 SENSOR_NAMES = ["sensor.g2h_v6_power", "sensor.h2g_v6_power", "sensor.shelly1pm_244cab441f01_power"]
@@ -266,6 +267,51 @@ def create_matrix_autonomy(max_pv_size = 10.0, current_pv_size = 1.0, battery_si
     # print the pv_size and battery_size with the highest autonomy
     print("pv_size: " + str(df.idxmax(axis=0).idxmax()) + ", battery_size: " + str(df.idxmax(axis=0).max()) + ", autonomy: " + str(df.max(axis=0).max()))
 
+def calculate_money(time=5.0):
+    # for every file in cahce without "Baseline" in name
+    for file in os.listdir("cache"):
+        # check if filename contains "Baseline" or "0kWh"
+        if file.endswith("Baseline kWp.csv"):
+            print("Skipping file: " + file)
+        else:
+            df = load_from_cache(os.path.join("cache", file))
+            # filename looks like "2022-10-09 - 2022-10-13 02kWp 01kWh.csv"
+            pv_size_and_battery_size = file.split(" ")[3].split(".")[0]
+            pv_size = pv_size_and_battery_size.split("kWp")[0]
+            battery_size = pv_size_and_battery_size.split("kWp")[1].split("kWh")[0]
+
+            # convert "Watt per 5 Seconds" to kWh rounded to 2 decimals
+            df["Grid2Home"] = df["Grid2Home"] / ((60/time)*60 / 1000)
+            df["Grid2Home"] = df["Grid2Home"].round(2)
+
+            df["Home2Grid"] = df["Home2Grid"] / ((60/time)*60 / 1000)
+            df["Home2Grid"] = df["Home2Grid"].round(2)
+
+            import_price = 0.35
+            export_price = 0.0875
+
+            df["Grid2Home-Money"] = df["Grid2Home"].sum() * import_price
+            df["Home2Grid-Money"] = df["Home2Grid"].sum() * export_price
+
+            df["Absolut Cost"] = df["Grid2Home-Money"] - df["Home2Grid-Money"]
+
+            # calculate cost per year by rule of three
+            # convert "last_changed" to datetime
+            df["last_changed"] = pd.to_datetime(df["last_changed"])
+            days = (df["last_changed"].max() - df["last_changed"].min()).days
+            df["Cost per Year"] = df["Absolut Cost"] / days * 365
+
+            print(df["Absolut Cost"].mean())
+            print(df["Cost per Year"].mean())
+
+            print("Expected cost at pv_size " + pv_size + " and battery_size " + battery_size + ": " + str(df["Cost per Year"].mean()))
+
+            # save to cache
+            save_to_cache(os.path.join("cache", file), df)
+            print("")
+
+    print("Done calculating money")
+
 def convert_to_excel():
     # convert the "Matrix Autonomy.csv" to an readable .csv
     df = load_from_cache(os.path.join("cache", "Matrix Autonomy.csv"))
@@ -273,6 +319,7 @@ def convert_to_excel():
     df.to_csv(os.path.join("cache", "Matrix Autonomy.csv"), sep=";", decimal=",")
 
 if __name__ == '__main__':
+    '''
     # wipe cache
     wipe_cache()
 
@@ -305,6 +352,10 @@ if __name__ == '__main__':
 
     # convert the "Matrix Autonomy.csv" to an readable .csv
     convert_to_excel()
+    '''
+
+    # calculate the money
+    calculate_money()
 
 
 

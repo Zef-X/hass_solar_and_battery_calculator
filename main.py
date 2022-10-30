@@ -6,6 +6,7 @@ import numpy as np
 import datetime
 import math
 import os
+from tqdm import tqdm
 
 # ----------------- CONFIGURATION -----------------
 
@@ -14,8 +15,8 @@ TOKEN = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiI1Mzc4YWUzMWFlMTI0MTZmOT
 URL = "http://homeassistant.local:8123/"
 
 # Retrieve data since...
-FIRST_DATE = "2022-10-09"
-FIRST_DATE = "2022-10-10"
+FIRST_DATE = "2022-10-20"
+#FIRST_DATE = "2022-10-10"
 
 # Sensors to retrieve - Grid2Home, Home2Grid, Solarproduction (Watt)
 SENSOR_NAMES = ["sensor.g2h_v6_power", "sensor.h2g_v6_power", "sensor.shelly1pm_244cab441f01_power"]
@@ -44,7 +45,6 @@ def load_from_cache(filename):
         return None
 
 def save_to_cache(filename, data):
-    print("Saving data to cache: " + filename)
     # round everything to 2 decimal places
     data.to_csv(filename, sep=';', index=False)
 
@@ -145,7 +145,7 @@ def calculate_selfconsumption(max_pv_size = 10.0, current_pv_size = 1.0, battery
 
 
 def calculate_battery(max_pv_size = 10.0, current_pv_size = 1.0, max_battery_size = 10, time=5.0):
-    for file in os.listdir("cache"):
+    for file in tqdm(os.listdir("cache")):
         # check if filename contains "Baseline" or "0kWh"
         if not file.endswith("Baseline kWp.csv") or file.endswith("01kWh.csv"):
             date_first = file.split(" ")[0]
@@ -161,7 +161,7 @@ def calculate_battery(max_pv_size = 10.0, current_pv_size = 1.0, max_battery_siz
 
             df_fresh = df
 
-            for battery_capacity in range(1, math.ceil(max_battery_size)):
+            for battery_capacity in tqdm(range(1, math.ceil(max_battery_size))):
                 df = df_fresh.copy()
                 print("Calculating battery capacity: " + str(battery_capacity) + "kWh")
                 battery_capacity = (((60/time)*60)*1000)*battery_capacity # converting kWh to "Watt per 5 Seconds" because this is the time resolution of the data
@@ -182,8 +182,11 @@ def calculate_battery(max_pv_size = 10.0, current_pv_size = 1.0, max_battery_siz
                             df.at[index, "Battery Flow"] = 0
                         else:
                             # Battery Flow is inverted NetFlow
-                            df.at[index, "Battery Flow"] = -df.at[index, "NetFlow"]
-                            df.at[index, "NetFlow"] = 0
+                            try:
+                                df.at[index, "Battery Flow"] = -df.at[index, "NetFlow"]
+                                df.at[index, "NetFlow"] = 0
+                            except:
+                                df.at[index, "Battery Flow"] = 0
 
                 # recalculate Grid2Home and Home2Grid
                 # if "NetFlow" is positive, it is Grid2Home
@@ -194,7 +197,10 @@ def calculate_battery(max_pv_size = 10.0, current_pv_size = 1.0, max_battery_siz
                     if df.at[index, "NetFlow"] > 0:
                         df.at[index, "Grid2Home"] = df.at[index, "NetFlow"]
                     else:
-                        df.at[index, "Home2Grid"] = -df.at[index, "NetFlow"]
+                        try:
+                            df.at[index, "Home2Grid"] = -df.at[index, "NetFlow"]
+                        except:
+                            df.at[index, "Home2Grid"] = 0
 
 
                 # convert "Watt per 5 Seconds" to kWh rounded to 2 decimals
@@ -256,7 +262,6 @@ def create_matrix_autonomy(max_pv_size = 10.0, current_pv_size = 1.0, battery_si
             pv_size = int(file.split(" ")[3].split("kWp")[0])
             battery_size = int(file.split("kWp")[1].split("kWh")[0])
 
-            #print("pv_size: " + str(pv_size) + ", battery_size: " + str(battery_size) + ", autonomy: " + str(df_file["Autonomy"].mean()))
             df.at[pv_size, battery_size] = df_file["Autonomy"].mean()
         else:
             print("Looks like a baseline file, skipping: " + file)
@@ -265,7 +270,7 @@ def create_matrix_autonomy(max_pv_size = 10.0, current_pv_size = 1.0, battery_si
     save_to_cache(os.path.join("cache", "Matrix Autonomy.csv"), df)
 
     # print the pv_size and battery_size with the highest autonomy
-    print("pv_size: " + str(df.idxmax(axis=0).idxmax()) + ", battery_size: " + str(df.idxmax(axis=0).max()) + ", autonomy: " + str(df.max(axis=0).max()))
+    #print("pv_size: " + str(df.idxmax(axis=0).idxmax()) + ", battery_size: " + str(df.idxmax(axis=0).max()) + ", autonomy: " + str(df.max(axis=0).max()))
 
 def calculate_money(time=5.0):
     # for every file in cahce without "Baseline" in name
@@ -319,40 +324,38 @@ def convert_to_excel():
     df.to_csv(os.path.join("cache", "Matrix Autonomy.csv"), sep=";", decimal=",")
 
 if __name__ == '__main__':
-    '''
     # wipe cache
-    wipe_cache()
+    #wipe_cache()
 
     # conect zu HomeAssistant
-    hass = client.client(URL, TOKEN, CURRENT_PV_SIZE)
+    #hass = client.client(URL, TOKEN, CURRENT_PV_SIZE)
 
     # get the data from the API and save it to a csv file in the cache folder
-    df = hass.cache_data(SENSOR_NAMES, FIRST_DATE)
+    #df = hass.cache_data(SENSOR_NAMES, FIRST_DATE)
 
     # calculate the solar production for each day
-    calculate_solar_production(MAX_PV_CAPACITY, CURRENT_PV_SIZE)
+    #calculate_solar_production(MAX_PV_CAPACITY, CURRENT_PV_SIZE)
 
     # concentrate the data for each pv_size to a single file per theoretical pv_size
-    concentrate_data(MAX_PV_CAPACITY, CURRENT_PV_SIZE)
+    #concentrate_data(MAX_PV_CAPACITY, CURRENT_PV_SIZE)
 
     # calculate the self-consumption before battery
-    calculate_selfconsumption(MAX_PV_CAPACITY, CURRENT_PV_SIZE)
+    #calculate_selfconsumption(MAX_PV_CAPACITY, CURRENT_PV_SIZE)
 
     # calculate the Battery Flow, Battery SoC and new NetFlow
-    calculate_battery(MAX_PV_CAPACITY, CURRENT_PV_SIZE, MAX_BATTERY_SIZE)
+    #calculate_battery(MAX_PV_CAPACITY, CURRENT_PV_SIZE, MAX_BATTERY_SIZE)
 
     # recalculate the self-consumption after battery
-    calculate_selfconsumption(MAX_PV_CAPACITY, CURRENT_PV_SIZE)
+    #calculate_selfconsumption(MAX_PV_CAPACITY, CURRENT_PV_SIZE)
 
     # calculate autonomy
-    calculate_autonomy()
+    #calculate_autonomy()
 
     # show the matrix of autonomy
     create_matrix_autonomy(MAX_PV_CAPACITY, CURRENT_PV_SIZE, MAX_BATTERY_SIZE)
 
-    # convert the "Matrix Autonomy.csv" to an readable .csv
+    # convert the "Matrix Autonomy.csv" to a excel-readable .csv
     convert_to_excel()
-    '''
 
     # calculate the money
     calculate_money()

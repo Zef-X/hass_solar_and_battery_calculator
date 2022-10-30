@@ -2,6 +2,7 @@ import pandas as pd
 import requests
 import datetime
 import os
+from tqdm import tqdm
 
 class client:
     def __init__(self, url, token, current_pv_size):
@@ -30,7 +31,7 @@ class client:
         last_date = datetime.datetime.strptime(last_date_str, "%Y-%m-%dT%H:%M:%S.%f+00:00")
 
 
-        for date in range((last_date - first_date).days + 1):
+        for date in tqdm(range((last_date - first_date).days + 1)):
             date = (first_date + datetime.timedelta(days=date)).isoformat()
 
             df = self.fetch_data(sensors, date)
@@ -50,7 +51,13 @@ class client:
 
         # save df
         df.to_csv("df.csv", sep=";")
-        df = df.pivot(index="last_changed", columns="entity_id", values="state")
+        try:
+            df = df.pivot(index="last_changed", columns="entity_id", values="state")
+        except:
+            print("No data for " + date)
+            print(df)
+            exit()
+
         df.index = pd.to_datetime(df.index)
         df = df.sort_index()
 
@@ -61,7 +68,6 @@ class client:
         return df
 
     def correct_data(self, sensors, data):
-        print("Correcting data")
         # correct data for original 5 second interval and interpolate missing values
         df = data.resample(self.SAMPLING_RATE).nearest(limit=1).interpolate(method="linear")
 
@@ -84,7 +90,6 @@ class client:
         #filename = folder + "/" + data.index[0].strftime("%Y-%m-%d") + " " + pv_size + "kWp " + battery_size + "kWh.csv"
         filename = folder + "/" + data.index[0].strftime("%Y-%m-%d") + " Baseline kWp.csv"
         data.to_csv(filename, sep=";")
-        print("Saved data to " + filename)
 
 
 

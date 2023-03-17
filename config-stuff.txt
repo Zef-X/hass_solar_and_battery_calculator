@@ -1,0 +1,15 @@
+# Home Assistant Token and URL
+TOKEN = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiI1Mzc4YWUzMWFlMTI0MTZmOTYzNTNlNDM1ZWZjNzhkNSIsImlhdCI6MTY2NTMzODYwMywiZXhwIjoxOTgwNjk4NjAzfQ.UDjuxN_JZb5ddIA34ZY2hOOfdDWlskvpXrb6AeY4qIk"
+URL = "http://homeassistant.local:8123/"
+
+# Retrieve data since...
+FIRST_DATE = "2022-10-20"
+#FIRST_DATE = "2022-10-10"
+
+# Sensors to retrieve - Grid2Home, Home2Grid, Solarproduction (Watt)
+SENSOR_NAMES = ["sensor.g2h_v6_power", "sensor.h2g_v6_power", "sensor.shelly1pm_244cab441f01_power"]
+
+# installed and max possible PV capacity
+CURRENT_PV_SIZE = 1.5
+MAX_PV_CAPACITY = 15.0
+MAX_BATTERY_SIZE = 15.0

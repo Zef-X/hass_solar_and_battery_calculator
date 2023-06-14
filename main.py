@@ -5,45 +5,79 @@ import os
 import pandas as pd
 from datetime import datetime, timedelta
 from tqdm import tqdm
+import sqlite3
 
-# Define Home Assistant credentials
-url = "http://homeassistant.local:8123/api/history/period"
-url = "http://homeassistant.local:8123"
-token = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiI1Mzc4YWUzMWFlMTI0MTZmOTYzNTNlNDM1ZWZjNzhkNSIsImlhdCI6MTY2NTMzODYwMywiZXhwIjoxOTgwNjk4NjAzfQ.UDjuxN_JZb5ddIA34ZY2hOOfdDWlskvpXrb6AeY4qIk"
+# Define DB Stuff
+database_name = "home-assistant_v2.db"
 
 # Define sensor names
 sensor_names = ["sensor.g2h_v6_power", "sensor.h2g_v6_power", "sensor.shelly1pm_244cab441f01_power"]
 
 # Define date range
-first_date = "2023-01-01"
-last_date = "2023-03-16"
+first_date = "2022-10-18 00:00:00"
+last_date = "2023-06-10 23:59:59"
 
-def download_sensor_data(url, token, sensor_names, first_date, last_date):
-    # Initialize empty DataFrame to store data
-    df = pd.DataFrame()
+def get_sensor_data(database_name, sensor_names, first_date, last_date):
+    connection = sqlite3.connect(database_name)
+    dfs = []
 
-    # Iterate over sensor names
     for sensor_name in sensor_names:
-        # Build URL to download data
-        data_url = f"{url}/api/history/period/{first_date}T00:00:00?filter_entity_id={sensor_name}"
-        headers = {"Authorization": f"Bearer {token}"}
+        query = f"""
+        SELECT states_meta.entity_id,
+               strftime('%Y-%m-%d %H:%M:%S', datetime((states.last_updated_ts / 300) * 300 - ((states.last_updated_ts / 300) * 300 % 300), 'unixepoch')) AS timestamp,
+               states.state
+        FROM states
+        LEFT JOIN states_meta ON (states.metadata_id = states_meta.metadata_id)
+        WHERE states_meta.entity_id = '{sensor_name}'
+          AND states.last_updated_ts >= strftime('%s', '{first_date}')
+          AND states.last_updated_ts <= strftime('%s', '{last_date}')
+        GROUP BY states_meta.entity_id, timestamp
+        ORDER BY timestamp DESC
+        """
 
-        # Send request and receive data in JSON format
-        response = requests.get(data_url, headers=headers)
-        data = response.json()
+        df = pd.read_sql_query(query, connection)
+        dfs.append(df)
 
-        # Convert data to pandas DataFrame and append to df
-        temp_df = pd.DataFrame(data)
-        temp_df = temp_df.set_index("last_changed")
-        temp_df = temp_df[["state"]]
-        temp_df.columns = [sensor_name]
-        df = pd.concat([df, temp_df], axis=1)
+    connection.close()
+    combined_df = pd.concat(dfs, ignore_index=True)
 
-    # Filter data to desired date range
-    df = df.loc[first_date:last_date]
+    # Reshape the DataFrame
+    reshaped_df = combined_df.pivot_table(index='timestamp', columns='entity_id', values='state', aggfunc='first')
+    reshaped_df.columns.name = None
+    reshaped_df.reset_index(inplace=True)
 
-    # Write data to CSV file
-    df.to_csv("sensor_data.csv")
+    # make sure that the timestamp column is of type datetime
+    reshaped_df['timestamp'] = pd.to_datetime(reshaped_df['timestamp'])
 
-data = download_sensor_data(url, token, sensor_names, first_date, last_date)
-print(data)
+    # replace every 'unknown' and 'unavailable' value with 0
+    reshaped_df = reshaped_df.replace(['unknown', 'unavailable'], 0)
+
+    # fill missing values with 0
+    reshaped_df = reshaped_df.fillna(0)
+
+    # make sure that the columns are of type float
+    try:
+        reshaped_df['sensor.g2h_v6_power'] = reshaped_df['sensor.g2h_v6_power'].astype(float)
+        reshaped_df['sensor.h2g_v6_power'] = reshaped_df['sensor.h2g_v6_power'].astype(float)
+        reshaped_df['sensor.shelly1pm_244cab441f01_power'] = reshaped_df['sensor.shelly1pm_244cab441f01_power'].astype(float)
+    except:
+        pass
+
+    return reshaped_df
+
+# Function which calculates the total power consumption for each timestamp: ((g2h_v6_power + shelly1pm_244cab441f01_power) - h2g_v6_power)
+def calculate_total_power_consumption(df):
+    df['total_power_consumption'] = df.apply(lambda row: (float(row['sensor.g2h_v6_power']) + float(row['sensor.shelly1pm_244cab441f01_power'])) - float(row['sensor.h2g_v6_power']), axis=1)
+    return df
+
+# Python Main function
+if __name__ == "__main__":
+    df = get_sensor_data(database_name, sensor_names, first_date, last_date)
+    print(df)
+
+    #save the df to a csv file
+    df.to_csv("sensor_data_raw.csv", index=False)
+
+    df_calc = calculate_total_power_consumption(df)
+    print(df_calc)
+    df_calc.to_csv("sensor_data_calc.csv", index=False)

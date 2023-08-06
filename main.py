@@ -6,6 +6,7 @@ import pandas as pd
 from datetime import datetime, timedelta
 from tqdm import tqdm
 import sqlite3
+import threading
 
 # Define DB Stuff
 database_name = "home-assistant_v2.db"
@@ -68,6 +69,11 @@ def get_sensor_data(database_name, sensor_names, first_date, last_date):
 # Function which calculates the total power consumption for each timestamp: ((g2h_v6_power + shelly1pm_244cab441f01_power) - h2g_v6_power)
 def calculate_total_power_consumption(df):
     df['total_power_consumption'] = df.apply(lambda row: (float(row['sensor.g2h_v6_power']) + float(row['sensor.shelly1pm_244cab441f01_power'])) - float(row['sensor.h2g_v6_power']), axis=1)
+    return df
+
+def calculate_theoretical_production(df, kWp):
+    # (sensor.shelly1pm / 1.5 * kWp); Column name = theoretical_production_'kWp'
+    df['theoretical_production_' + kWp] = df.apply(lambda row: (float(row['sensor.shelly1pm_244cab441f01_power']) / 1.5) * kWp, axis=1)
     return df
 
 # Python Main function
